@@ -1,0 +1,270 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>管理员后台 · 访问审批</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="check.js"></script>
+  <script src="admin-config.js"></script>
+</head>
+<body class="ac-page">
+  <nav class="ac-top-nav" aria-label="访问控制导航">
+    <div class="ac-top-nav-title">个人网站访问控制</div>
+    <div class="ac-top-nav-links">
+      <a class="ac-nav-primary" href="index.html">进入主页</a>
+      <a href="apply.html">申请访问</a>
+      <a href="admin.html">管理后台</a>
+    </div>
+  </nav>
+
+  <div class="ac-container">
+    <div class="ac-brand">
+      <div class="ac-brand-mark">A</div>
+      <div class="ac-brand-text">Admin · Access Review</div>
+    </div>
+
+    <section class="ac-card" id="loginCard">
+      <h1>管理员登录</h1>
+      <p class="ac-subtitle">请输入管理员密码以进入审批后台。</p>
+      <form id="loginForm" autocomplete="off" novalidate>
+        <div class="ac-form-row">
+          <label for="adminPwd">密码</label>
+          <input class="ac-input" id="adminPwd" type="password" placeholder="请输入管理员密码" />
+        </div>
+        <button class="ac-btn" type="submit">登录</button>
+        <div id="loginMsg" class="ac-msg"></div>
+      </form>
+    </section>
+
+    <section class="ac-card" id="dashboard" style="display:none;">
+      <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+        <div>
+          <h1 style="margin-bottom:4px;">访问审批后台</h1>
+          <p class="ac-subtitle" style="margin:0;">通过 / 拒绝申请，所有数据保存在浏览器本地。</p>
+        </div>
+        <button class="ac-btn ac-btn-secondary" id="logoutBtn" type="button">退出</button>
+      </div>
+
+      <div class="ac-divider"></div>
+
+      <div class="ac-tabs" id="tabs">
+        <button class="ac-tab active" data-status="pending"  type="button">待审批 <span class="ac-count" data-count="pending">0</span></button>
+        <button class="ac-tab"        data-status="approved" type="button">已通过 <span class="ac-count" data-count="approved">0</span></button>
+        <button class="ac-tab"        data-status="rejected" type="button">已拒绝 <span class="ac-count" data-count="rejected">0</span></button>
+      </div>
+
+      <div class="ac-search">
+        <input class="ac-input" id="searchInput" type="search" placeholder="按姓名或申请理由搜索…" />
+      </div>
+
+      <div class="ac-list" id="listBox"></div>
+    </section>
+  </div>
+
+  <script>
+    (function () {
+      var SESSION_KEY = 'ac_admin_session';
+      var AC = window.AccessControl;
+
+      var loginCard = document.getElementById('loginCard');
+      var dashboard = document.getElementById('dashboard');
+      var loginForm = document.getElementById('loginForm');
+      var loginMsg  = document.getElementById('loginMsg');
+      var pwdInput  = document.getElementById('adminPwd');
+      var logoutBtn = document.getElementById('logoutBtn');
+      var tabs      = document.getElementById('tabs');
+      var listBox   = document.getElementById('listBox');
+      var searchEl  = document.getElementById('searchInput');
+
+      var currentTab = 'pending';
+
+      function showMsg(el, text, type) {
+        el.textContent = text;
+        el.className = 'ac-msg show ' + (type || 'info');
+      }
+
+      function showDashboard() {
+        loginCard.style.display = 'none';
+        dashboard.style.display = '';
+        render();
+      }
+
+      if (sessionStorage.getItem(SESSION_KEY) === '1') showDashboard();
+
+      // 计算输入密码的 SHA-256，避免在前端代码中保存明文。
+      function sha256Hex(text) {
+        if (!window.crypto || !window.crypto.subtle) {
+          return Promise.reject(new Error('当前环境不支持 SubtleCrypto，无法进行哈希比较。'));
+        }
+        var buf = new TextEncoder().encode(text);
+        return window.crypto.subtle.digest('SHA-256', buf).then(function (hashBuf) {
+          var bytes = new Uint8Array(hashBuf);
+          var hex = '';
+          for (var i = 0; i < bytes.length; i++) {
+            var h = bytes[i].toString(16);
+            hex += h.length === 1 ? '0' + h : h;
+          }
+          return hex;
+        });
+      }
+
+      loginForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var expected = window.ADMIN_PASSWORD_SHA256;
+        if (!expected) {
+          showMsg(loginMsg, '管理员配置未加载（admin-config.js 未引入）。', 'error');
+          return;
+        }
+        var input = pwdInput.value;
+        sha256Hex(input).then(function (hash) {
+          if (hash === expected) {
+            sessionStorage.setItem(SESSION_KEY, '1');
+            pwdInput.value = '';
+            showDashboard();
+          } else {
+            showMsg(loginMsg, '密码错误，请重新输入。', 'error');
+            pwdInput.select();
+          }
+        }).catch(function (err) {
+          showMsg(loginMsg, '密码校验失败：' + (err && err.message ? err.message : err), 'error');
+        });
+      });
+
+      logoutBtn.addEventListener('click', function () {
+        sessionStorage.removeItem(SESSION_KEY);
+        dashboard.style.display = 'none';
+        loginCard.style.display = '';
+        loginMsg.className = 'ac-msg';
+      });
+
+      tabs.addEventListener('click', function (e) {
+        var btn = e.target.closest('.ac-tab');
+        if (!btn) return;
+        currentTab = btn.dataset.status;
+        Array.prototype.forEach.call(tabs.querySelectorAll('.ac-tab'), function (b) {
+          b.classList.toggle('active', b === btn);
+        });
+        render();
+      });
+
+      searchEl.addEventListener('input', render);
+
+      function fmtTime(ts) {
+        if (!ts) return '';
+        var d = new Date(ts);
+        var pad = function (n) { return n < 10 ? '0' + n : '' + n; };
+        return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate())
+          + ' ' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+      }
+
+      function escapeHtml(s) {
+        return String(s || '').replace(/[&<>"']/g, function (c) {
+          return { '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;' }[c];
+        });
+      }
+
+      function updateCounts(all) {
+        var counts = { pending: 0, approved: 0, rejected: 0 };
+        all.forEach(function (a) { if (counts[a.status] !== undefined) counts[a.status]++; });
+        Object.keys(counts).forEach(function (k) {
+          var el = tabs.querySelector('[data-count="' + k + '"]');
+          if (el) el.textContent = counts[k];
+        });
+      }
+
+      function actionsFor(item) {
+        if (item.status === 'pending') {
+          return '<button class="ac-btn ac-btn-success" data-act="approve">通过</button>'
+               + '<button class="ac-btn ac-btn-danger"  data-act="reject">拒绝</button>';
+        }
+        if (item.status === 'approved') {
+          return '<button class="ac-btn ac-btn-warn" data-act="revoke">移除权限</button>';
+        }
+        if (item.status === 'rejected') {
+          return '<button class="ac-btn ac-btn-secondary" data-act="restore">恢复申请</button>';
+        }
+        return '';
+      }
+
+      function render() {
+        var all = AC.getApplications();
+        updateCounts(all);
+
+        var keyword = searchEl.value.trim().toLowerCase();
+        var filtered = all.filter(function (a) {
+          if (a.status !== currentTab) return false;
+          if (!keyword) return true;
+          return (String(a.name || '').toLowerCase().indexOf(keyword) >= 0)
+              || (String(a.reason || '').toLowerCase().indexOf(keyword) >= 0);
+        });
+
+        filtered.sort(function (a, b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+
+        if (filtered.length === 0) {
+          listBox.innerHTML = '<div class="ac-empty">' +
+            (currentTab === 'pending'  ? '当前没有待审批的申请。'
+            : currentTab === 'approved' ? '还没有已通过的申请。'
+            : '还没有已拒绝的申请。') +
+            '</div>';
+          return;
+        }
+
+        listBox.innerHTML = filtered.map(function (item) {
+          var statusCls = 'ac-status-' + item.status;
+          var statusLbl = item.status === 'pending'  ? '待审批'
+                        : item.status === 'approved' ? '已通过' : '已拒绝';
+          return ''
+            + '<div class="ac-item" data-id="' + escapeHtml(item.id) + '">'
+            +   '<div class="ac-item-main">'
+            +     '<div class="ac-item-title">'
+            +       escapeHtml(item.name)
+            +       '<span class="ac-status-tag ' + statusCls + '">' + statusLbl + '</span>'
+            +     '</div>'
+            +     '<div class="ac-item-reason">' + escapeHtml(item.reason) + '</div>'
+            +     '<div class="ac-item-meta">提交：' + fmtTime(item.createdAt)
+            +     (item.updatedAt && item.updatedAt !== item.createdAt
+                  ? '　·　最近更新：' + fmtTime(item.updatedAt) : '')
+            +     '</div>'
+            +   '</div>'
+            +   '<div class="ac-item-actions">' + actionsFor(item) + '</div>'
+            + '</div>';
+        }).join('');
+      }
+
+      listBox.addEventListener('click', function (e) {
+        var btn = e.target.closest('button[data-act]');
+        if (!btn) return;
+        var itemEl = btn.closest('.ac-item');
+        if (!itemEl) return;
+        var id = itemEl.dataset.id;
+        var act = btn.dataset.act;
+
+        var list = AC.getApplications();
+        var idx = -1;
+        for (var i = 0; i < list.length; i++) {
+          if (list[i].id === id) { idx = i; break; }
+        }
+        if (idx === -1) return;
+        var item = list[idx];
+
+        if (act === 'approve') {
+          item.status = 'approved';
+        } else if (act === 'reject') {
+          item.status = 'rejected';
+          AC.clearLogin(item.name);
+        } else if (act === 'revoke') {
+          item.status = 'pending';
+          AC.clearLogin(item.name);
+        } else if (act === 'restore') {
+          item.status = 'pending';
+        }
+        item.updatedAt = Date.now();
+        list[idx] = item;
+        AC.saveApplications(list);
+        render();
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>申请访问 · 个人网站</title>
+  <link rel="stylesheet" href="style.css" />
+  <script src="check.js"></script>
+</head>
+<body class="ac-page">
+  <nav class="ac-top-nav" aria-label="访问控制导航">
+    <div class="ac-top-nav-title">个人网站访问控制</div>
+    <div class="ac-top-nav-links">
+      <a class="ac-nav-primary" href="index.html">进入主页</a>
+      <a href="apply.html">申请访问</a>
+      <a href="admin.html">管理后台</a>
+    </div>
+  </nav>
+
+  <div class="ac-container">
+    <div class="ac-brand">
+      <div class="ac-brand-mark">P</div>
+      <div class="ac-brand-text">Personal Portfolio · Access</div>
+    </div>
+
+    <section class="ac-card">
+      <h1>申请访问</h1>
+      <p class="ac-subtitle">本网站需要审批后访问，请填写姓名和申请理由提交申请。</p>
+
+      <form id="applyForm" autocomplete="off" novalidate>
+        <div class="ac-form-row">
+          <label for="applyName">姓名</label>
+          <input class="ac-input" id="applyName" type="text" maxlength="40" placeholder="请输入您的姓名" />
+        </div>
+        <div class="ac-form-row">
+          <label for="applyReason">申请理由</label>
+          <textarea class="ac-textarea" id="applyReason" maxlength="500" placeholder="简单介绍一下您是谁、为什么希望访问本站"></textarea>
+        </div>
+
+        <button class="ac-btn" type="submit">提交申请</button>
+        <div id="applyMsg" class="ac-msg"></div>
+      </form>
+    </section>
+
+    <section class="ac-card">
+      <h1>查询审批状态</h1>
+      <p class="ac-subtitle">已提交申请的用户可输入姓名查看审批结果。</p>
+
+      <form id="checkForm" autocomplete="off" novalidate>
+        <div class="ac-form-row">
+          <label for="checkName">姓名</label>
+          <input class="ac-input" id="checkName" type="text" maxlength="40" placeholder="提交申请时填写的姓名" />
+        </div>
+        <button class="ac-btn ac-btn-secondary" type="submit">查询状态</button>
+        <div id="checkMsg" class="ac-msg"></div>
+        <div id="checkResult" style="margin-top: 16px;"></div>
+      </form>
+    </section>
+
+    <p style="text-align:center; margin-top:24px; color: var(--ac-muted); font-size: 12px;">
+      管理员入口：<a class="ac-link" href="admin.html">admin.html</a>
+    </p>
+  </div>
+
+  <script>
+    (function () {
+      var AC = window.AccessControl;
+
+      function showMsg(el, text, type) {
+        el.textContent = text;
+        el.className = 'ac-msg show ' + (type || 'info');
+      }
+
+      var form = document.getElementById('applyForm');
+      var msg = document.getElementById('applyMsg');
+
+      form.addEventListener('submit', function (e) {
+        e.preventDefault();
+        var name = document.getElementById('applyName').value.trim();
+        var reason = document.getElementById('applyReason').value.trim();
+
+        if (!name) return showMsg(msg, '请填写姓名。', 'error');
+        if (!reason) return showMsg(msg, '申请理由不能为空。', 'error');
+
+        var list = AC.getApplications();
+        var existing = AC.findByName(name);
+        var now = Date.now();
+
+        if (existing) {
+          if (existing.status === 'approved') {
+            showMsg(msg, '该姓名已通过审核，请在下方“查询审批状态”中直接进入网站。', 'success');
+            return;
+          }
+          existing.reason = reason;
+          existing.status = 'pending';
+          existing.updatedAt = now;
+        } else {
+          list.push({
+            id: 'a_' + now + '_' + Math.random().toString(36).slice(2, 7),
+            name: name,
+            reason: reason,
+            status: 'pending',
+            createdAt: now,
+            updatedAt: now
+          });
+        }
+
+        AC.saveApplications(list);
+        form.reset();
+        showMsg(msg, '申请已提交，请等待管理员审核。', 'success');
+      });
+
+      var checkForm = document.getElementById('checkForm');
+      var checkMsg = document.getElementById('checkMsg');
+      var checkResult = document.getElementById('checkResult');
+
+      checkForm.addEventListener('submit', function (e) {
+        e.preventDefault();
+        checkResult.innerHTML = '';
+        var name = document.getElementById('checkName').value.trim();
+        if (!name) return showMsg(checkMsg, '请输入提交申请时填写的姓名。', 'error');
+
+        var rec = AC.findByName(name);
+        if (!rec) {
+          showMsg(checkMsg, '未找到对应申请，请先在上方提交申请。', 'info');
+          return;
+        }
+
+        if (rec.status === 'pending') {
+          showMsg(checkMsg, '您的申请正在审核中，请稍后再来查询。', 'info');
+        } else if (rec.status === 'rejected') {
+          showMsg(checkMsg, '很遗憾，您的申请未通过。可重新提交申请并补充信息。', 'error');
+        } else if (rec.status === 'approved') {
+          showMsg(checkMsg, '您的申请已通过！点击下方按钮进入网站。', 'success');
+          var btn = document.createElement('button');
+          btn.className = 'ac-btn';
+          btn.type = 'button';
+          btn.textContent = '进入网站';
+          btn.addEventListener('click', function () {
+            AC.setLogin(rec.name, 7);
+            location.href = 'index.html';
+          });
+          checkResult.appendChild(btn);
+        }
+      });
+    })();
+  </script>
+</body>
+</html>
