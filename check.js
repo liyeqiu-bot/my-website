@@ -1,16 +1,18 @@
 /*
  * 访问控制脚本：
  * - apply.html / admin.html 直接放行
+ * - 访问申请、查询、审批数据保存到 Supabase 云端
  * - 管理员已登录后台时，也可直接查看主页
  * - 已审批访客：凭 isLoggedIn_<姓名> 7 天有效登录标记直接查看主页
  * - 未授权访客：不立即跳转，在当前主页显示模糊背景 + 身份选择弹窗
  */
 (function () {
   var STORAGE_KEYS = {
-    APPLICATIONS: 'accessApplications',
     LOGIN_PREFIX: 'isLoggedIn_',
     ADMIN_SESSION: 'ac_admin_session'
   };
+
+  var cachedApplications = [];
 
   function normName(name) {
     return String(name || '').trim().toLowerCase();
@@ -25,34 +27,125 @@
     return getBaseDir() + file;
   }
 
+  function getConfig() {
+    var cfg = window.SUPABASE_CONFIG || {};
+    if (!cfg.url || !cfg.anonKey || !cfg.table) {
+      throw new Error('Supabase 配置未加载，请检查 supabase-config.js。');
+    }
+    return cfg;
+  }
+
+  function toDbRecord(item) {
+    var now = Date.now();
+    var name = String(item.name || '').trim();
+    return {
+      id: item.id || ('a_' + now + '_' + Math.random().toString(36).slice(2, 7)),
+      name: name,
+      name_key: normName(name),
+      reason: String(item.reason || '').trim(),
+      status: item.status || 'pending',
+      created_at: item.createdAt || item.created_at || now,
+      updated_at: item.updatedAt || item.updated_at || now
+    };
+  }
+
+  function fromDbRecord(row) {
+    if (!row) return null;
+    return {
+      id: row.id,
+      name: row.name,
+      reason: row.reason,
+      status: row.status,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at
+    };
+  }
+
+  function request(path, options) {
+    var cfg = getConfig();
+    var headers = {
+      apikey: cfg.anonKey,
+      Authorization: 'Bearer ' + cfg.anonKey,
+      'Content-Type': 'application/json'
+    };
+    options = options || {};
+    if (options.prefer) headers.Prefer = options.prefer;
+
+    return fetch(cfg.url.replace(/\/$/, '') + '/rest/v1/' + path, {
+      method: options.method || 'GET',
+      headers: headers,
+      body: options.body ? JSON.stringify(options.body) : undefined
+    }).then(function (res) {
+      if (!res.ok) {
+        return res.text().then(function (text) {
+          throw new Error(text || ('Supabase 请求失败：' + res.status));
+        });
+      }
+      if (res.status === 204) return null;
+      return res.text().then(function (text) {
+        return text ? JSON.parse(text) : null;
+      });
+    });
+  }
+
   window.AccessControl = window.AccessControl || {
     keys: STORAGE_KEYS,
 
     getApplications: function () {
-      try {
-        return JSON.parse(localStorage.getItem(STORAGE_KEYS.APPLICATIONS) || '[]');
-      } catch (e) {
-        return [];
-      }
+      var cfg = getConfig();
+      return request(cfg.table + '?select=*&order=updated_at.desc').then(function (rows) {
+        cachedApplications = (rows || []).map(fromDbRecord);
+        return cachedApplications;
+      });
     },
 
     saveApplications: function (list) {
-      localStorage.setItem(STORAGE_KEYS.APPLICATIONS, JSON.stringify(list));
+      cachedApplications = list || [];
+      return Promise.all(cachedApplications.map(function (item) {
+        return window.AccessControl.upsertApplication(item);
+      }));
+    },
+
+    upsertApplication: function (item) {
+      var cfg = getConfig();
+      var row = toDbRecord(item);
+      return request(cfg.table + '?on_conflict=name_key', {
+        method: 'POST',
+        prefer: 'resolution=merge-duplicates,return=representation',
+        body: row
+      }).then(function (rows) {
+        var rec = fromDbRecord(rows && rows[0]);
+        return rec || fromDbRecord(row);
+      });
     },
 
     findByName: function (name) {
-      if (!name) return null;
-      var list = this.getApplications();
-      var key = normName(name);
-      for (var i = 0; i < list.length; i++) {
-        if (normName(list[i].name) === key) return list[i];
-      }
-      return null;
+      if (!name) return Promise.resolve(null);
+      var cfg = getConfig();
+      var key = encodeURIComponent(normName(name));
+      return request(cfg.table + '?select=*&name_key=eq.' + key + '&limit=1').then(function (rows) {
+        return fromDbRecord(rows && rows[0]);
+      });
     },
 
     isApprovedName: function (name) {
-      var rec = this.findByName(name);
-      return !!(rec && rec.status === 'approved');
+      return this.findByName(name).then(function (rec) {
+        return !!(rec && rec.status === 'approved');
+      });
+    },
+
+    updateApplicationStatus: function (id, status) {
+      var cfg = getConfig();
+      return request(cfg.table + '?id=eq.' + encodeURIComponent(id), {
+        method: 'PATCH',
+        prefer: 'return=representation',
+        body: {
+          status: status,
+          updated_at: Date.now()
+        }
+      }).then(function (rows) {
+        return fromDbRecord(rows && rows[0]);
+      });
     },
 
     setLogin: function (name, days) {
@@ -108,10 +201,6 @@
 
   // 管理员已登录后台，允许直接查看主页
   if (window.AccessControl.isAdminLoggedIn()) return;
-
-  // 已通过访客，允许直接查看主页
-  var name = window.AccessControl.getCurrentLoggedInName();
-  if (name && window.AccessControl.isApprovedName(name)) return;
 
   function ensureGateStyle() {
     if (document.getElementById('accessGateStyle')) return;
@@ -216,7 +305,7 @@
     document.head.appendChild(style);
   }
 
-  function showAccessGate() {
+  function showAccessGate(note) {
     if (document.querySelector('.access-gate-overlay')) return;
     ensureGateStyle();
     document.body.classList.add('access-gate-locked');
@@ -235,14 +324,30 @@
           '<a class="access-gate-btn primary" href="' + buildUrl('apply.html') + '">访客申请访问</a>' +
           '<a class="access-gate-btn secondary" href="' + buildUrl('admin.html') + '">管理员登录</a>' +
         '</div>' +
-        '<div class="access-gate-note">申请通过后，再次打开主页链接可直接查看作品。</div>' +
+        '<div class="access-gate-note">' + (note || '申请通过后，再次打开主页链接可直接查看作品。') + '</div>' +
       '</div>';
     document.body.appendChild(overlay);
   }
 
+  function checkVisitorAccess() {
+    var name = window.AccessControl.getCurrentLoggedInName();
+    if (!name) {
+      showAccessGate();
+      return;
+    }
+    window.AccessControl.isApprovedName(name).then(function (ok) {
+      if (!ok) {
+        window.AccessControl.clearLogin(name);
+        showAccessGate('您的本机登录标记已失效或权限尚未通过，请重新申请或查询状态。');
+      }
+    }).catch(function () {
+      showAccessGate('暂时无法连接云端审批服务，请稍后再试或联系管理员。');
+    });
+  }
+
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', showAccessGate);
+    document.addEventListener('DOMContentLoaded', checkVisitorAccess);
   } else {
-    showAccessGate();
+    checkVisitorAccess();
   }
 })();

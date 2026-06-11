@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>管理员后台 · 访问审批</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="supabase-config.js"></script>
   <script src="check.js"></script>
   <script src="admin-config.js"></script>
 </head>
@@ -41,7 +42,7 @@
       <div style="display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap;">
         <div>
           <h1 style="margin-bottom:4px;">访问审批后台</h1>
-          <p class="ac-subtitle" style="margin:0;">通过 / 拒绝申请，所有数据保存在浏览器本地。</p>
+          <p class="ac-subtitle" style="margin:0;">通过 / 拒绝申请，所有数据保存在 Supabase 云端。</p>
         </div>
         <button class="ac-btn ac-btn-secondary" id="logoutBtn" type="button">退出</button>
       </div>
@@ -78,6 +79,7 @@
       var searchEl  = document.getElementById('searchInput');
 
       var currentTab = 'pending';
+      var applications = [];
 
       function showMsg(el, text, type) {
         el.textContent = text;
@@ -145,10 +147,12 @@
         Array.prototype.forEach.call(tabs.querySelectorAll('.ac-tab'), function (b) {
           b.classList.toggle('active', b === btn);
         });
-        render();
+        renderList(applications);
       });
 
-      searchEl.addEventListener('input', render);
+      searchEl.addEventListener('input', function () {
+        renderList(applications);
+      });
 
       function fmtTime(ts) {
         if (!ts) return '';
@@ -188,7 +192,17 @@
       }
 
       function render() {
-        var all = AC.getApplications();
+        listBox.innerHTML = '<div class="ac-empty">正在读取云端申请数据…</div>';
+        AC.getApplications().then(function (all) {
+          applications = all || [];
+          renderList(applications);
+        }).catch(function (err) {
+          listBox.innerHTML = '<div class="ac-empty">云端数据读取失败：' + escapeHtml(err && err.message ? err.message : err) + '</div>';
+        });
+      }
+
+      function renderList(all) {
+        all = all || [];
         updateCounts(all);
 
         var keyword = searchEl.value.trim().toLowerCase();
@@ -215,7 +229,7 @@
           var statusLbl = item.status === 'pending'  ? '待审批'
                         : item.status === 'approved' ? '已通过' : '已拒绝';
           return ''
-            + '<div class="ac-item" data-id="' + escapeHtml(item.id) + '">'
+            + '<div class="ac-item" data-id="' + escapeHtml(item.id) + '" data-name="' + escapeHtml(item.name) + '">'
             +   '<div class="ac-item-main">'
             +     '<div class="ac-item-title">'
             +       escapeHtml(item.name)
@@ -239,30 +253,32 @@
         if (!itemEl) return;
         var id = itemEl.dataset.id;
         var act = btn.dataset.act;
-
-        var list = AC.getApplications();
-        var idx = -1;
-        for (var i = 0; i < list.length; i++) {
-          if (list[i].id === id) { idx = i; break; }
-        }
-        if (idx === -1) return;
-        var item = list[idx];
+        var nextStatus = null;
 
         if (act === 'approve') {
-          item.status = 'approved';
+          nextStatus = 'approved';
         } else if (act === 'reject') {
-          item.status = 'rejected';
-          AC.clearLogin(item.name);
+          nextStatus = 'rejected';
+          AC.clearLogin(itemEl.dataset.name);
         } else if (act === 'revoke') {
-          item.status = 'pending';
-          AC.clearLogin(item.name);
+          nextStatus = 'pending';
+          AC.clearLogin(itemEl.dataset.name);
         } else if (act === 'restore') {
-          item.status = 'pending';
+          nextStatus = 'pending';
         }
-        item.updatedAt = Date.now();
-        list[idx] = item;
-        AC.saveApplications(list);
-        render();
+        if (!nextStatus) return;
+
+        btn.disabled = true;
+        btn.textContent = '处理中…';
+        AC.updateApplicationStatus(id, nextStatus).then(function () {
+          return AC.getApplications();
+        }).then(function (all) {
+          applications = all || [];
+          renderList(applications);
+        }).catch(function (err) {
+          alert('云端审批更新失败：' + (err && err.message ? err.message : err));
+          render();
+        });
       });
     })();
   </script>

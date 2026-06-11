@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>申请访问 · 个人网站</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="supabase-config.js"></script>
   <script src="check.js"></script>
 </head>
 <body class="ac-page">
@@ -71,8 +72,14 @@
         el.className = 'ac-msg show ' + (type || 'info');
       }
 
+      function showError(el, err) {
+        var text = err && err.message ? err.message : String(err || '未知错误');
+        showMsg(el, '云端服务连接失败：' + text, 'error');
+      }
+
       var form = document.getElementById('applyForm');
       var msg = document.getElementById('applyMsg');
+      var submitBtn = form.querySelector('button[type="submit"]');
 
       form.addEventListener('submit', function (e) {
         e.preventDefault();
@@ -82,32 +89,30 @@
         if (!name) return showMsg(msg, '请填写姓名。', 'error');
         if (!reason) return showMsg(msg, '申请理由不能为空。', 'error');
 
-        var list = AC.getApplications();
-        var existing = AC.findByName(name);
-        var now = Date.now();
+        submitBtn.disabled = true;
+        submitBtn.textContent = '提交中…';
 
-        if (existing) {
-          if (existing.status === 'approved') {
+        AC.findByName(name).then(function (existing) {
+          if (existing && existing.status === 'approved') {
             showMsg(msg, '该姓名已通过审核，请在下方“查询审批状态”中直接进入网站。', 'success');
-            return;
+            return null;
           }
-          existing.reason = reason;
-          existing.status = 'pending';
-          existing.updatedAt = now;
-        } else {
-          list.push({
-            id: 'a_' + now + '_' + Math.random().toString(36).slice(2, 7),
+          return AC.upsertApplication({
+            id: existing && existing.id,
             name: name,
             reason: reason,
             status: 'pending',
-            createdAt: now,
-            updatedAt: now
+            createdAt: existing && existing.createdAt
+          }).then(function () {
+            form.reset();
+            showMsg(msg, '申请已提交，请等待管理员审核。', 'success');
           });
-        }
-
-        AC.saveApplications(list);
-        form.reset();
-        showMsg(msg, '申请已提交，请等待管理员审核。', 'success');
+        }).catch(function (err) {
+          showError(msg, err);
+        }).then(function () {
+          submitBtn.disabled = false;
+          submitBtn.textContent = '提交申请';
+        });
       });
 
       var checkForm = document.getElementById('checkForm');
@@ -120,28 +125,31 @@
         var name = document.getElementById('checkName').value.trim();
         if (!name) return showMsg(checkMsg, '请输入提交申请时填写的姓名。', 'error');
 
-        var rec = AC.findByName(name);
-        if (!rec) {
-          showMsg(checkMsg, '未找到对应申请，请先在上方提交申请。', 'info');
-          return;
-        }
+        AC.findByName(name).then(function (rec) {
+          if (!rec) {
+            showMsg(checkMsg, '未找到对应申请，请先在上方提交申请。', 'info');
+            return;
+          }
 
-        if (rec.status === 'pending') {
-          showMsg(checkMsg, '您的申请正在审核中，请稍后再来查询。', 'info');
-        } else if (rec.status === 'rejected') {
-          showMsg(checkMsg, '很遗憾，您的申请未通过。可重新提交申请并补充信息。', 'error');
-        } else if (rec.status === 'approved') {
-          showMsg(checkMsg, '您的申请已通过！点击下方按钮进入网站。', 'success');
-          var btn = document.createElement('button');
-          btn.className = 'ac-btn';
-          btn.type = 'button';
-          btn.textContent = '进入网站';
-          btn.addEventListener('click', function () {
-            AC.setLogin(rec.name, 7);
-            location.href = 'index.html';
-          });
-          checkResult.appendChild(btn);
-        }
+          if (rec.status === 'pending') {
+            showMsg(checkMsg, '您的申请正在审核中，请稍后再来查询。', 'info');
+          } else if (rec.status === 'rejected') {
+            showMsg(checkMsg, '很遗憾，您的申请未通过。可重新提交申请并补充信息。', 'error');
+          } else if (rec.status === 'approved') {
+            showMsg(checkMsg, '您的申请已通过！点击下方按钮进入网站。', 'success');
+            var btn = document.createElement('button');
+            btn.className = 'ac-btn';
+            btn.type = 'button';
+            btn.textContent = '进入网站';
+            btn.addEventListener('click', function () {
+              AC.setLogin(rec.name, 7);
+              location.href = 'index.html';
+            });
+            checkResult.appendChild(btn);
+          }
+        }).catch(function (err) {
+          showError(checkMsg, err);
+        });
       });
     })();
   </script>
